@@ -1,5 +1,3 @@
-import { getPaginationItems } from "./pagination.js";
-
 const defaultAvatar = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCIgdmlld0JveD0iMCAwIDQ4IDQ4Ij48Y2lyY2xlIGN4PSIyNCIgY3k9IjI0IiByPSIyNCIgZmlsbD0iI2VkZjFmOCIvPjxjaXJjbGUgY3g9IjI0IiBjeT0iMTciIHI9IjciIGZpbGw9IiM5MGEwYWYiLz48cGF0aCBkPSJNNiA0MmMxLTkgNy0xNCAxOC0xNHMxNyA1IDE4IDE0IiBmaWxsPSIjOTBhMGFmIi8+PC9zdmc+";
 
 function escapeHtml(value = "") {
@@ -61,27 +59,20 @@ export class UserView {
     this.gridView.innerHTML = '<p class="loading-state">Loading users...</p>';
   }
 
-  setPagination({ page, limit, totalCount, userCount }) {
-    const hasNextPage = Number.isFinite(totalCount)
-      ? page * limit < totalCount
-      : userCount === limit;
-    const totalPages = Number.isFinite(totalCount)
-      ? Math.max(1, Math.ceil(totalCount / limit))
-      : page + (hasNextPage ? 1 : 0);
-
+  setPagination({ page, limit, totalCount, userCount, totalPages, hasNextPage, pageItems: items }) {
     this.pagination.querySelector('[data-action="prev"]').disabled = page <= 1;
 
     this.pagination.querySelector('[data-action="next"]').disabled =
-      Number.isFinite(totalCount) ? page >= totalPages : !hasNextPage;
+      !hasNextPage;
 
-    const pageItems = getPaginationItems(page, totalPages, 5).map((item) =>
+    const pageMarkup = items.map((item) =>
       item === "ellipsis"
         ? '<span class="pagination-ellipsis" aria-label="Pages omitted">…</span>'
         : `<button type="button" class="pagination-button${item === page ? " active" : ""}" data-action="page-goto" data-page="${item}" ${item === page ? 'aria-current="page"' : ""} aria-label="Page ${item}">${item}</button>`,
     );
 
     const pageContainer = document.getElementById("pagination-page");
-    pageContainer.innerHTML = pageItems.join("");
+    pageContainer.innerHTML = pageMarkup.join("");
       pageContainer.setAttribute("aria-label", "Pagination pages");
 
   }

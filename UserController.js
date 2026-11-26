@@ -1,12 +1,21 @@
+import {
+  isImage,
+  isValidPhoneNumber,
+  normalizePhonePrefix,
+  verifyImageFile,
+} from "./validation.js";
+
 export class UserController {
   constructor(api, view) {
     this.api = api;
     this.view = view;
-    this.users = [];
-    this.page = 1;
-    this.limit = 8;
-    this.search = "";
-    this.searchTimer = null;
+    this.state = {
+      users: [],
+      page: 1,
+      limit: 8,
+      search: "",
+      searchTimer: null,
+    };
     this.editingUserId = null;
     this.createDialog = document.getElementById("create-dialog");
     this.createForm = document.getElementById("create-form");
@@ -16,50 +25,77 @@ export class UserController {
     this.searchInput = document.getElementById("user-search");
     this.phoneInputs = new Map();
     const urlParams = new URLSearchParams(window.location.search);
-    this.search = urlParams.get("search")?.trim() ?? "";
-    this.searchInput.value = this.search;
+    this.state.search = urlParams.get("search")?.trim() ?? "";
+    this.searchInput.value = this.state.search;
     const urlPage = Number(urlParams.get("page"));
-    if (Number.isInteger(urlPage) && urlPage > 0) this.page = urlPage;
-    if (this.searchInput) this.searchInput.value = this.search;
+    if (Number.isInteger(urlPage) && urlPage > 0) this.state.page = urlPage;
+    if (this.searchInput) this.searchInput.value = this.state.search;
   }
 
   async render() {
-    this.view.setLoading(this.limit);
+    this.view.setLoading(this.state.limit);
+
     try {
       const { data, headers } = await this.api.list({
-        page: this.page,
-        limit: this.limit,
-        search: this.search,
+        page: this.state.page,
+        limit: this.state.limit,
+        search: this.state.search,
       });
-      this.users = Array.isArray(data) ? data : [];
-      if (!this.users.length && this.page > 1) {
-        this.page -= 1;
+
+      this.state.users = Array.isArray(data) ? data : [];
+
+      if (!this.state.users.length && this.state.page > 1) {
+        this.state.page -= 1;
         return this.render();
       }
+
       const countHeader = headers?.get?.("x-total-count") ?? null;
       const totalCount = countHeader?.trim() ? Number(countHeader) : null;
+
+
+      const hasNextPage = Number.isFinite(totalCount)
+        ? this.state.page * this.state.limit < totalCount
+        : this.state.users.length === this.state.limit;
+
+
+      const totalPages = Number.isFinite(totalCount)
+        ? Math.max(1, Math.ceil(totalCount / this.state.limit))
+        : this.state.page + (hasNextPage ? 1 : 0);
+
+
       this.view.setPagination({
-        page: this.page,
-        limit: this.limit,
+        page: this.state.page,
+        limit: this.state.limit,
         totalCount,
-        userCount: this.users.length,
+        userCount: this.state.users.length,
+        totalPages,
+        hasNextPage,
+        pageItems: this.getPaginationItems(this.state.page, totalPages, 5),
       });
+
       this.syncPageToUrl();
-      await this.view.renderUsers(this.users, this.limit);
+
+      await this.view.renderUsers(this.state.users, this.state.limit);
     } catch (error) {
+
       this.view.showMessage(
         "Error",
         `Failed to load users: ${error.message}`,
         "error",
       );
-      this.users = [];
-      await this.view.renderUsers([], this.limit);
+
+      this.state.users = [];
+      await this.view.renderUsers([], this.state.limit);
       this.view.setPagination({
-        page: this.page,
-        limit: this.limit,
+        page: this.state.page,
+        limit: this.state.limit,
         totalCount: 0,
         userCount: 0,
+        totalPages: 1,
+        hasNextPage: false,
+        pageItems: [1],
       });
+
       this.syncPageToUrl();
     } finally {
       this.pagination.classList.remove("is-loading");
@@ -115,25 +151,30 @@ export class UserController {
         this.previewAvatarFile(this.editForm, event.target.files[0]);
       }
     });
-    this.editForm.elements.namedItem("avatarUrl")?.addEventListener("input", (event) => {
-      const url = event.target.value.trim();
-      if (url) this.validateAvatarUrl(this.editForm, url);
-      else this.setAvatarPreview(this.editForm, this.previousAvatarUrl || "");
-    });
+    this.editForm.elements
+      .namedItem("avatarUrl")
+      ?.addEventListener("input", (event) => {
+        const url = event.target.value.trim();
+        if (url) this.validateAvatarUrl(this.editForm, url);
+        else this.setAvatarPreview(this.editForm, this.previousAvatarUrl || "");
+      });
 
     this.searchInput?.addEventListener("input", () => {
-      clearTimeout(this.searchTimer);
-      this.search = this.searchInput.value.trim();
-      this.searchTimer = setTimeout(() => {
-        this.page = 1;
+      clearTimeout(this.state.searchTimer);
+      this.state.search = this.searchInput.value.trim();
+      this.state.searchTimer = setTimeout(() => {
+        this.state.page = 1;
         this.render();
       }, 300);
     });
 
     const responsiveView = window.matchMedia("(max-width: 900px)");
+
     const applyResponsiveView = () =>
       this.view.setView(responsiveView.matches ? "grid" : "table");
+
     responsiveView.addEventListener("change", applyResponsiveView);
+    
     document
       .getElementById("table-view-button")
       .addEventListener("click", () => {
@@ -162,7 +203,7 @@ export class UserController {
   async handleUserAction(event) {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
-    const user = this.users.find(
+    const user = this.state.users.find(
       (item) => String(item.id) === button.dataset.id,
     );
     if (!user) return;
@@ -177,12 +218,17 @@ export class UserController {
       ]) {
         this.editForm.elements.namedItem(field).value = user[field] ?? "";
       }
-      this.phoneInputs.get(this.editForm.elements.namedItem("phone"))?.setNumber(user.phone ?? "");
+      this.phoneInputs
+        .get(this.editForm.elements.namedItem("phone"))
+        ?.setNumber(user.phone ?? "");
       this.editForm.elements.namedItem("avatarFile").value = "";
-      this.editForm.querySelector('input[name="avatarMode"][value="url"]').checked = true;
+      this.editForm.querySelector(
+        'input[name="avatarMode"][value="url"]',
+      ).checked = true;
       this.previousAvatarUrl = user.avatarUrl ?? "";
       this.setAvatarPreview(this.editForm, this.previousAvatarUrl);
-      if (this.previousAvatarUrl) this.validateAvatarUrl(this.editForm, this.previousAvatarUrl);
+      if (this.previousAvatarUrl)
+        this.validateAvatarUrl(this.editForm, this.previousAvatarUrl);
       this.setAvatarMode(this.editForm, "url");
       this.editDialog.showModal();
       this.lockScroll();
@@ -235,7 +281,7 @@ export class UserController {
     try {
       const response = await this.api.create(payload);
       this.createDialog.close();
-      this.page = 1;
+      this.state.page = 1;
       await this.view.showMessage("Added", "User added successfully.");
       await this.render();
     } catch (error) {
@@ -263,7 +309,7 @@ export class UserController {
       .namedItem("avatarUrl")
       .value.trim();
     const avatarFile = this.editForm.elements.namedItem("avatarFile").files[0];
-    if (mode === "url" && avatarUrl && !(await this.isImage(avatarUrl))) {
+    if (mode === "url" && avatarUrl && !(await isImage(avatarUrl))) {
       await this.view.showMessage(
         "Invalid image URL",
         "The avatar URL could not be loaded. Please enter a valid image URL and try again.",
@@ -289,10 +335,7 @@ export class UserController {
     submit.textContent = "Saving...";
     const form = new FormData(this.editForm);
     const user = Object.fromEntries(
-      ["fullName", "email", "bio"].map((key) => [
-        key,
-        form.get(key).trim(),
-      ]),
+      ["fullName", "email", "bio"].map((key) => [key, form.get(key).trim()]),
     );
     user.phone = phone;
     user.address = form.get("address").trim() || null;
@@ -332,7 +375,7 @@ export class UserController {
   }
 
   async updatePreference(control, field, newValue) {
-    const user = this.users.find(
+    const user = this.state.users.find(
       (item) => String(item.id) === control.dataset.id,
     );
     if (!user) return;
@@ -379,39 +422,44 @@ export class UserController {
     form.elements.namedItem("avatarFile").disabled = useUrl;
     if (useUrl) form.elements.namedItem("avatarFile").value = "";
     else form.elements.namedItem("avatarUrl").value = "";
-    if (useUrl) this.setAvatarPreview(form, form.elements.namedItem("avatarUrl").value.trim() || this.previousAvatarUrl || "");
+    if (useUrl)
+      this.setAvatarPreview(
+        form,
+        form.elements.namedItem("avatarUrl").value.trim() ||
+          this.previousAvatarUrl ||
+          "",
+      );
   }
 
   initializePhoneInputs() {
     for (const form of [this.createForm, this.editForm]) {
       const input = form.elements.namedItem("phone");
       if (!input || this.phoneInputs.has(input)) continue;
-      this.phoneInputs.set(input, window.intlTelInput(input, {
-        initialCountry: "id",
-        countrySelectorMode: "dropdown",
-        separateDialCode: false,
-        formatAsYouType: true,
-        loadUtils: () => import("https://cdn.jsdelivr.net/npm/intl-tel-input@29.5.12/dist/js/utils.js"),
-      }));
-      input.addEventListener("input", () => this.normalizePhonePrefix(input, this.phoneInputs.get(input)));
+      this.phoneInputs.set(
+        input,
+        window.intlTelInput(input, {
+          initialCountry: "id",
+          countrySelectorMode: "dropdown",
+          separateDialCode: false,
+          formatAsYouType: true,
+          loadUtils: () =>
+            import("https://cdn.jsdelivr.net/npm/intl-tel-input@29.5.12/dist/js/utils.js"),
+        }),
+      );
+      input.addEventListener("input", () =>
+        normalizePhonePrefix(input, this.phoneInputs.get(input)),
+      );
     }
-  }
-
-  normalizePhonePrefix(input, iti) {
-    if (!input.value.startsWith("0") || !iti) return;
-    const selectedCountry = iti.getSelectedCountry();
-    if (!selectedCountry?.dialCode) return;
-    const dialCode = selectedCountry.dialCode;
-    const digits = input.value.replace(/\D/g, "").slice(1);
-    iti.setNumber(`+${dialCode}${digits}`);
   }
 
   async getPhoneNumber(form) {
     const input = form.elements.namedItem("phone");
     const iti = this.phoneInputs.get(input);
     if (iti?.promise) await iti.promise;
-    if (!iti || !iti.isValidNumber()) {
-      input.setCustomValidity("Enter a valid phone number for the selected country.");
+    if (!iti || !isValidPhoneNumber(iti)) {
+      input.setCustomValidity(
+        "Enter a valid phone number for the selected country.",
+      );
       input.reportValidity();
       return null;
     }
@@ -428,9 +476,9 @@ export class UserController {
   }
 
   async validateAvatarUrl(form, url) {
-    const valid = await this.isImage(url);
+    const valid = await isImage(url);
     if (form.elements.namedItem("avatarUrl").value.trim() !== url) return;
-    this.setAvatarPreview(form, valid ? url : (this.previousAvatarUrl || ""));
+    this.setAvatarPreview(form, valid ? url : this.previousAvatarUrl || "");
   }
 
   async previewAvatarFile(form, file) {
@@ -471,7 +519,7 @@ export class UserController {
   handleThemeToggle(event) {
     const control = event.target.closest('[data-field="theme"]');
     if (!control || control.disabled) return;
-    const user = this.users.find(
+    const user = this.state.users.find(
       (item) => String(item.id) === control.dataset.id,
     );
     if (!user) return;
@@ -498,17 +546,18 @@ export class UserController {
   async handlePagination(event) {
     const button = event.target.closest("[data-action]");
     if (!button || button.disabled) return;
-    if (button.dataset.action === "next") this.page += 1;
-    else if (button.dataset.action === "prev" && this.page > 1) this.page -= 1;
+    if (button.dataset.action === "next") this.state.page += 1;
+    else if (button.dataset.action === "prev" && this.state.page > 1)
+      this.state.page -= 1;
     else if (button.dataset.action === "page-goto") {
       const targetPage = Number(button.dataset.page);
       if (
         !Number.isInteger(targetPage) ||
         targetPage < 1 ||
-        targetPage === this.page
+        targetPage === this.state.page
       )
         return;
-      this.page = targetPage;
+      this.state.page = targetPage;
     } else return;
     this.syncPageToUrl();
     await this.render();
@@ -516,84 +565,42 @@ export class UserController {
 
   syncPageToUrl() {
     const url = new URL(window.location.href);
-    if (this.page > 1) url.searchParams.set("page", String(this.page));
+    if (this.state.page > 1)
+      url.searchParams.set("page", String(this.state.page));
     else url.searchParams.delete("page");
-    if (this.search) url.searchParams.set("search", this.search);
+    if (this.state.search) url.searchParams.set("search", this.state.search);
     else url.searchParams.delete("search");
     window.history.replaceState(null, "", url);
   }
 
-  isImage(url) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        resolve(result);
-      };
+  getPaginationItems(currentPage, totalPages, maxButtons = 5) {
+    const total = Math.max(1, Math.floor(totalPages));
+    const current = Math.min(total, Math.max(1, Math.floor(currentPage)));
+    const siblings = Math.max(0, Math.floor((maxButtons - 1) / 2));
+    if (total <= maxButtons) {
+      return Array.from({ length: total }, (_, index) => index + 1);
+    }
 
-      let parsedUrl;
-      try {
-        parsedUrl = new URL(url);
-      } catch {
-        resolve(false);
-        return;
-      }
+    let start = Math.max(1, current - siblings);
+    let end = Math.min(total, current + siblings);
+    const windowSize = siblings * 2 + 1;
+    if (end - start + 1 < windowSize) {
+      if (start === 1) end = Math.min(total, start + windowSize - 1);
+      else if (end === total) start = Math.max(1, end - windowSize + 1);
+    }
 
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        resolve(false);
-        return;
-      }
-
-      const img = new Image();
-      const timeoutId = setTimeout(() => finish(false), 10000);
-      img.onload = () => finish(img.naturalWidth > 0 && img.naturalHeight > 0);
-      img.onerror = () => finish(false);
-      img.src = parsedUrl.href;
+    const numbers = [
+      ...new Set([
+        1,
+        total,
+        ...Array.from({ length: end - start + 1 }, (_, index) => start + index),
+      ]),
+    ].sort((a, b) => a - b);
+    return numbers.flatMap((number, index) => {
+      const previous = numbers[index - 1];
+      return index > 0 && number - previous > 1
+        ? ["ellipsis", number]
+        : [number];
     });
-  }
-}
-
-const IMAGE_SIGNATURES = [
-  {
-    type: "image/png",
-    bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
-  },
-  { type: "image/jpeg", bytes: [0xff, 0xd8, 0xff] },
-  { type: "image/gif", bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61] },
-  { type: "image/gif", bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] },
-];
-
-async function verifyImageFile(file) {
-  if (!file || file.size === 0)
-    return { valid: false, reason: "empty_or_invalid_blob" };
-  if (file.size > 2 * 1024 * 1024)
-    return { valid: false, reason: "file_too_large" };
-
-  const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-  const matches = (signature, offset = 0) =>
-    signature.every((byte, index) => bytes[offset + index] === byte);
-  const standardImage = IMAGE_SIGNATURES.some(({ bytes: signature }) =>
-    matches(signature),
-  );
-  const webpImage =
-    matches([0x52, 0x49, 0x46, 0x46]) && matches([0x57, 0x45, 0x42, 0x50], 8);
-  if (!standardImage && !webpImage)
-    return { valid: false, reason: "invalid_magic_bytes" };
-
-  try {
-    const image = await createImageBitmap(file);
-    const tooLarge = image.width > 8192 || image.height > 8192;
-    const valid = image.width > 0 && image.height > 0 && !tooLarge;
-    image.close();
-    return valid
-      ? { valid: true }
-      : {
-          valid: false,
-          reason: tooLarge ? "dimension_too_large" : "zero_dimension",
-        };
-  } catch {
-    return { valid: false, reason: "decode_failed" };
   }
 }
